@@ -12,7 +12,7 @@
    //from request_uri and params to create cache key
    function cache_key($request_uri,$params=array())
    {
-      return $request_uri;
+      return $request_uri. (count($params) ? '?'.http_build_query($params):'');
    }
 
    //use cache_key and data to check if the data should be cached
@@ -24,4 +24,5 @@
 
    //which cache_key should  cache
    define("ALLOW_CACHE_KEYS",array(
+       //'/','/images/help_btn.gif'
    ));
