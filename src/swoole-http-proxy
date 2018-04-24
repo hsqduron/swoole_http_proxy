@@ -1,341 +1,313 @@
 #!/usr/bin/env php
 <?php
-   define("SERVICE_NAME","swoole-http_proxy");
+define("SERVICE_NAME", "swoole-http_proxy");
 
-   require_once("/etc/swoole-http-proxy/config.php");
-   require_once("/etc/swoole-http-proxy/cache.php");
+require_once(__DIR__ . "/config/config.php");
+require_once(__DIR__ . "/config/cache.php");
 
 
-   function now()
-   {
-      return date("Y-m-d H:i:s");
-   }
+function now()
+{
+    return date("Y-m-d H:i:s");
+}
 
-   function save_log($msg)
-   {
-      $msg=sprintf("[%s] %s\n",now(),$msg);
+function save_log($msg)
+{
+    $msg = sprintf("[%s] %s\n", now(), $msg);
 
-      openlog(SERVICE_NAME, LOG_PID | LOG_PERROR ,LOG_LOCAL0);
-      syslog(LOG_INFO,$msg);
-   }
+    openlog(SERVICE_NAME, LOG_PID | LOG_PERROR, LOG_LOCAL0);
+    syslog(LOG_INFO, $msg);
+}
 
-   function debug($msg)
-   {
-      if(DEBUG )
-      {
-         $msg=sprintf("debug %s",$msg);
-         save_log($msg);
-      }
-   }
+function debug($msg)
+{
+    if (DEBUG) {
+        $msg = sprintf("debug %s", $msg);
+        save_log($msg);
+    }
+}
 
-   function client_response($cli,$resp,$debug_data)
-   {
-      if($cli->statusCode == -1)
-      {
-         $msg="statusCode = -1";
-         $msg.="errCode: ".$cli->errCode;
-         save_log($msg);
-      }
-      else if($cli->statusCode == -2)
-      {
-         //客户端提前关闭
-         $resp->status(499); //nginx 自定义的响应码
-         $resp->end('CLIENT CLOSED BY TIMEOUT');
+function client_response($cli, $resp, $debug_data)
+{
+    if ($cli->statusCode == -1) {
+        $msg = "statusCode = -1";
+        $msg .= "errCode: " . $cli->errCode;
+        save_log($msg);
+    } else if ($cli->statusCode == -2) {
+        //客户端提前关闭
+        $resp->status(499); //nginx 自定义的响应码
+        $resp->end('CLIENT CLOSED BY TIMEOUT');
 
-         $msg="client closed by timeout ";
-         $msg.="Error Detail \n";
-         //$msg.="URL:".$url."\n";
-         save_log($msg);
-      }
-      else if($cli->statusCode > 0)
-      {
-         $resp->status($cli->statusCode);
-      }
-      else 
-      {
-         $msg="unknown statusCode".$cli->statusCode;
-         $msg.="Error Detail \n";
-         //$msg.="URL:".$url."\n";
-         //$msg.="postData: ".print_r($postData,true)."\n";
-         $msg.=$cli->body;
+        $msg = "client closed by timeout ";
+        $msg .= "Error Detail \n";
+        //$msg.="URL:".$url."\n";
+        save_log($msg);
+    } else if ($cli->statusCode > 0) {
+        $resp->status($cli->statusCode);
+    } else {
+        $msg = "unknown statusCode" . $cli->statusCode;
+        $msg .= "Error Detail \n";
+        //$msg.="URL:".$url."\n";
+        //$msg.="postData: ".print_r($postData,true)."\n";
+        $msg .= $cli->body;
 
-         save_log($msg);
-      }
+        save_log($msg);
+    }
 
-      if($cli->cookies)
-      {
-         foreach($cli->cookies as $k=>$v)
-         {
-            $resp->cookie($k,$v);
-         }
-      }
+    if ($cli->cookies) {
+        foreach ($cli->cookies as $k => $v) {
+            $resp->cookie($k, $v);
+        }
+    }
 
-      if($cli->headers)
-      {
-         //不压缩
-         foreach($cli->headers as $k=>$v)
-         {
-            if(in_array($k,array(
-               'content-encoding',
-               'vary',
-               'transfer-encoding',
+    if ($cli->headers) {
+        //不压缩
+        foreach ($cli->headers as $k => $v) {
+            if (in_array($k, array(
+                'content-encoding',
+                'vary',
+                'transfer-encoding',
             )))
-            continue;
+                continue;
 
-            $resp->header($k,$v);
-         }
-      }
+            $resp->header($k, $v);
+        }
+    }
 
-      debug(json_encode($debug_data));
+    debug(json_encode($debug_data));
+    $cli->body = str_replace('域名注册', '网域注册', $cli->body);
+    $cli->body = str_replace('虚拟主机', '网页寄存', $cli->body);
+    $resp->end($cli->body);
+}
 
-      $resp->end($cli->body);
-   }
+class Cache
+{
+    public static function init($redis)
+    {
+        $redis->hMset(CACHE_REDIS_KEY, array(
+            "stat_visited" => 0,
+            "stat_cached" => 0,
+        ));
+    }
 
-   class Cache
-   {
-      public static function init($redis)
-      {
-         $redis->hMset(CACHE_REDIS_KEY,array(
-            "stat_visited"=>0,
-            "stat_cached"=>0,
-         ));
-      }
-
-      public static function isAllowCache($key)
-      {
-         if(in_array($key,ALLOW_CACHE_KEYS))
-         {
+    public static function isAllowCache($key)
+    {
+        if (in_array($key, ALLOW_CACHE_KEYS)) {
             debug("[cache is allow] $key ");
             return true;
-         }
-         else
-         {
+        } else {
             debug("[cache is not allow] $key ");
             return false;
-         }
-      }
+        }
+    }
 
-      public static function isCacheDataValid($key,$data)
-      {
-         if( cache_data_is_valid($key,$data) )
-         {
+    public static function isCacheDataValid($key, $data)
+    {
+        if (cache_data_is_valid($key, $data)) {
             return true;
-         }
-         else
-         {
+        } else {
             return false;
-         }
-      }
+        }
+    }
 
-      public static function set($redis,$key,$data)
-      {
-         if(self::isAllowCache($key))
-         {
-            $redis->hset(CACHE_REDIS_KEY,$key,$data);
-         }
-      }
+    public static function set($redis, $key, $data)
+    {
+        if (self::isAllowCache($key)) {
+            $redis->hset(CACHE_REDIS_KEY, $key, $data);
+        }
+    }
 
-      public static function get($redis,$key)
-      {
-         $redis->hincrby(CACHE_REDIS_KEY,"stat_visited",1);
+    public static function get($redis, $key)
+    {
+        $redis->hincrby(CACHE_REDIS_KEY, "stat_visited", 1);
 
-         if(self::isAllowCache($key))
-         {
-            $data=$redis->hget(CACHE_REDIS_KEY,$key);
-            if($data != false)
-            {
-               $redis->hincrby(CACHE_REDIS_KEY,"stat_cached",1);
-               return $data;
+        if (self::isAllowCache($key)) {
+            $data = $redis->hget(CACHE_REDIS_KEY, $key);
+            if ($data != false) {
+                $redis->hincrby(CACHE_REDIS_KEY, "stat_cached", 1);
+                return $data;
             }
-         }
+        }
 
-         return false;
-      }
+        return false;
+    }
 
-      public static function getCacheKey($request_uri,$params=array())
-      {
-         return cache_key($request_uri,$params);
-      }
+    public static function getCacheKey($request_uri, $params = array())
+    {
+        return cache_key($request_uri, $params);
+    }
 
-      public static function showStatus($redis)
-      {
-         $msg="Stat:\n";
-         $msg.=sprintf("\t %s : %s\n", "visited",$redis->hget(CACHE_REDIS_KEY,"stat_visited"));
-         $msg.=sprintf("\t %s : %s\n", "cached",$redis->hget(CACHE_REDIS_KEY,"stat_cached"));
+    public static function showStatus($redis)
+    {
+        $msg = "Stat:\n";
+        $msg .= sprintf("\t %s : %s\n", "visited", $redis->hget(CACHE_REDIS_KEY, "stat_visited"));
+        $msg .= sprintf("\t %s : %s\n", "cached", $redis->hget(CACHE_REDIS_KEY, "stat_cached"));
 
-         return $msg;
-      }
-   }
+        return $msg;
+    }
+}
 
-   class HttpProxyServer
-   {
-      static $frontendCloseCount = 0;
-      static $backendCloseCount = 0;
-      static $frontends = array();
-      static $backends = array();
-      static $serv;
+class HttpProxyServer
+{
+    static $frontendCloseCount = 0;
+    static $backendCloseCount = 0;
+    static $frontends = array();
+    static $backends = array();
+    static $serv;
 
 
-      static function run($serv)
-      {
-         self::$serv = $serv;
+    static function run($serv)
+    {
+        self::$serv = $serv;
 
-         $redis = new \Redis();
-         $redis->connect(CACHE_REDIS_HOST,CACHE_REDIS_PORT);
+        $redis = new \Redis();
+        $redis->connect(CACHE_REDIS_HOST, CACHE_REDIS_PORT);
 
-         Cache::init($redis);
+        Cache::init($redis);
 
-         self::$serv->set(array(
+        self::$serv->set(array(
             //'daemonize'=>true,
-            'pid_file' => '/var/run/'.SERVICE_NAME.'.pid',
-            'log_file'=>'/var/log/'.SERVICE_NAME.'.log', //daemonize=true才有效
-         ));
+            'pid_file' => '/var/run/' . SERVICE_NAME . '.pid',
+            'log_file' => '/var/log/' . SERVICE_NAME . '.log', //daemonize=true才有效
+        ));
 
-         self::$serv->start();
+        self::$serv->start();
 
-      }
+    }
 
-      /**
-      * @param $fd
-      * @return swoole_http_client
-      */
-      static function getClient($fd)
-      {
-         if (!isset(HttpProxyServer::$frontends[$fd]))
-         {
-            $client = new swoole_http_client(CLIENT_HOST,CLIENT_PORT);
+    /**
+     * @param $fd
+     * @return swoole_http_client
+     */
+    static function getClient($fd)
+    {
+        if (!isset(HttpProxyServer::$frontends[$fd])) {
+            $client = new swoole_http_client(CLIENT_HOST, CLIENT_PORT);
 
             $client->set(array('keep_alive' => 0));
             HttpProxyServer::$frontends[$fd] = $client;
-            $client->on('connect', function ($cli) use ($fd)
-            {
-               HttpProxyServer::$backends[$cli->sock] = $fd;
+            $client->on('connect', function ($cli) use ($fd) {
+                HttpProxyServer::$backends[$cli->sock] = $fd;
             });
-            $client->on('close', function ($cli) use ($fd)
-            {
-               self::$backendCloseCount++;
-               unset(HttpProxyServer::$backends[$cli->sock]);
-               unset(HttpProxyServer::$frontends[$fd]);
+            $client->on('close', function ($cli) use ($fd) {
+                self::$backendCloseCount++;
+                unset(HttpProxyServer::$backends[$cli->sock]);
+                unset(HttpProxyServer::$frontends[$fd]);
             });
-         }
-         return HttpProxyServer::$frontends[$fd];
-      }
-   }
+        }
+        return HttpProxyServer::$frontends[$fd];
+    }
+}
 
-   $serv = new swoole_http_server(SERVER_HOST, SERVER_PORT, SWOOLE_BASE);
-   $serv->set(array('worker_num' => 8));
+$serv = new swoole_http_server(SERVER_HOST, SERVER_PORT, SWOOLE_BASE);
+$serv->set(array('worker_num' => 8));
 
-   $serv->on('workerstart', function($serv, $id) {
+$serv->on('workerstart', function ($serv, $id) {
 
-      $redis = new \Redis();
-      $redis->connect(CACHE_REDIS_HOST,CACHE_REDIS_PORT);
+    $redis = new \Redis();
+    $redis->connect(CACHE_REDIS_HOST, CACHE_REDIS_PORT);
 
-      $serv->redis = $redis;
-   });
-
-
-   $serv->on('Close', function ($serv, $fd, $reactorId)
-   {
-      HttpProxyServer::$frontendCloseCount++;
-      if (isset(HttpProxyServer::$frontends[$fd]))
-      {
-         $backend_socket = HttpProxyServer::$frontends[$fd];
-         $backend_socket->close();
-         unset(HttpProxyServer::$backends[$backend_socket->sock]);
-         unset(HttpProxyServer::$frontends[$fd]);
-      }
-   });
-
-   $serv->on("Start",function(){
-      save_log("server start");
-   });
-
-   $serv->on("Shutdown",function(){
-      save_log("server shutdown");
-   });
+    $serv->redis = $redis;
+});
 
 
-   $serv->on('Request', function (swoole_http_request $req, swoole_http_response $resp) use ($serv){
+$serv->on('Close', function ($serv, $fd, $reactorId) {
+    HttpProxyServer::$frontendCloseCount++;
+    if (isset(HttpProxyServer::$frontends[$fd])) {
+        $backend_socket = HttpProxyServer::$frontends[$fd];
+        $backend_socket->close();
+        unset(HttpProxyServer::$backends[$backend_socket->sock]);
+        unset(HttpProxyServer::$frontends[$fd]);
+    }
+});
 
-      $debug_data=array();
+$serv->on("Start", function () {
+    save_log("server start");
+});
 
-      if(empty($req->server['query_string']))
-      {
-         $url=$req->server['request_uri'];
-      }
-      else
-      {
-         $url=$req->server['request_uri']."?".$req->server['query_string'];
-      }
-
-      $debug_data['request_url']=$url;
-
-
-      //HttpProxyServer::addStatus("visit",1);
-
-      if($url == "/status")
-      {
-         $msg=Cache::showStatus($serv->redis);
-
-         $resp->end($msg);
-      }
+$serv->on("Shutdown", function () {
+    save_log("server shutdown");
+});
 
 
-      $client = HttpProxyServer::getClient($req->fd);
-      $client->set(['timeout' => 10]);
+$serv->on('Request', function (swoole_http_request $req, swoole_http_response $resp) use ($serv) {
 
-      //$client->setHeaders($req->header);
-      if($req->cookie)
-      {
-         $client->setCookies($req->cookie);
-      }
+    $debug_data = array();
 
-      $debug_data['request_method']=$req->server['request_method'];
+    if (empty($req->server['query_string'])) {
+        $url = $req->server['request_uri'];
+    } else {
+        $url = $req->server['request_uri'] . "?" . $req->server['query_string'];
+    }
 
-      if ($req->server['request_method'] == 'GET')
-      {
-         $cache_key=Cache::getCacheKey($req->server['request_uri'],$req->get);
-         $cache_data=Cache::get($serv->redis,$cache_key);
-         if($cache_data)
-         {
+    $debug_data['request_url'] = $url;
+
+
+    //HttpProxyServer::addStatus("visit",1);
+
+    if ($url == "/status") {
+        $msg = Cache::showStatus($serv->redis);
+
+        $resp->end($msg);
+    }
+
+
+    $client = HttpProxyServer::getClient($req->fd);
+    $client->set(['timeout' => 10]);
+
+    //$client->setHeaders($req->header);
+    if ($req->cookie) {
+        $client->setCookies($req->cookie);
+    }
+
+    $client->setHeaders([
+        'Host' => explode(':', $req->header['host'])[0],
+        //"User-Agent" => 'Chrome/49.0.2587.3',
+        //'Accept' => 'text/html,application/xhtml+xml,application/xml',
+        //'Accept-Encoding' => 'gzip',
+    ]);
+
+    $debug_data['request_method'] = $req->server['request_method'];
+
+    if ($req->server['request_method'] == 'GET') {
+        $cache_key = Cache::getCacheKey($req->server['request_uri'], $req->get);
+        echo "cache_key = $cache_key \n";
+        //Cache::get 这个地方有问题，没有将http头和http body分别取出
+        $cache_data = Cache::get($serv->redis, $cache_key);
+        if ($cache_data) {
             //HttpProxyServer::addStatus("cache_hit",1);
+            $resp->header('cache_hit', 1);
             $resp->end($cache_data);
-         }
-         else
-         {
-            $client->get($url, function ($cli) use ($serv,$req, $resp,$debug_data) {
+        } else {
+            $client->get($url, function ($cli) use ($serv, $req, $resp, $debug_data) {
 
-               $cache_key=Cache::getCacheKey($req->server['request_uri'],$req->get);
-               Cache::set($serv->redis,$cache_key,$cli->body);
+                $cache_key = Cache::getCacheKey($req->server['request_uri'], $req->get);
+                //Cache::set 有问题，没有将http头给保存起来
+                Cache::set($serv->redis, $cache_key, $cli->body);
 
-               $debug_data['response_code']=$cli->statusCode;
-               $debug_data['response']=$cli->body;
-               client_response($cli,$resp,$debug_data);
+                $debug_data['response_code'] = $cli->statusCode;
+                $debug_data['response'] = $cli->body;
+                client_response($cli, $resp, $debug_data);
             });
-         }
-      }
-      elseif ($req->server['request_method'] == 'POST')
-      {
-         $postData = $req->post;
-         if($postData == false) 
-         {
-            $postData=$req->rawContent();
-         }
+        }
+    } elseif ($req->server['request_method'] == 'POST') {
+        $postData = $req->post;
+        if ($postData == false) {
+            $postData = $req->rawContent();
+        }
 
-         $debug_data['post_data']=$postData;
+        $debug_data['post_data'] = $postData;
 
-         $client->post($url, $postData, function ($cli) use ($req, $resp,$debug_data) {
+        $client->post($url, $postData, function ($cli) use ($req, $resp, $debug_data) {
 
-            client_response($cli,$resp,$debug_data);
-         });
-      }
-      else
-      {
-         debug("method not allow (not get or post)");
+            client_response($cli, $resp, $debug_data);
+        });
+    } else {
+        debug("method not allow (not get or post)");
 
-         $resp->status(405);
-         $resp->end("method not allow.");
-      }
-   });
+        $resp->status(405);
+        $resp->end("method not allow.");
+    }
+});
 
-   HttpProxyServer::run($serv);
+HttpProxyServer::run($serv);
